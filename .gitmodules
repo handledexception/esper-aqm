@@ -2,3 +2,7 @@
 	path = thirdparty/esp-idf-lib
 	url = https://github.com/UncleRus/esp-idf-lib.git
 	branch = master
+[submodule "thirdparty/embedded-i2c-sen5x"]
+	path = thirdparty/embedded-i2c-sen5x
+	url = https://github.com/handledexception/embedded-i2c-sen5x.git
+	branch = esp32-sample-impl
