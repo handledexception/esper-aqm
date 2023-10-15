@@ -56,14 +56,23 @@ system_t* system_init(void)
     // initialize NVS flash
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
+        err = nvs_flash_erase();
+        if (err == ESP_OK) {
+            err = nvs_flash_init();
+        }
     }
-    ESP_ERROR_CHECK(err);
 
-    ESP_ERROR_CHECK(i2cdev_init());
+    if (err == ESP_OK) {
+        err = i2cdev_init();
+    }
 
-    ESP_LOGD(TAG, "system_init OK");
+    if (err == ESP_OK) {
+        ESP_LOGD(TAG, "system_init OK");
+    } else {
+        ESP_LOGE(TAG, "system_init FAIL");
+        free(sys);
+        sys = NULL;
+    }
 
     return sys;
 }

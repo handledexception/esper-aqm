@@ -2,6 +2,7 @@
 #include "sensor_data.h"
 #include "sen5x_i2c.h"
 #include "sensirion_i2c_hal.h"
+#include "sensirion_i2c_esp32_config.h"
 #include "lcd_ascii.h"
 #include "mcp9808.h"
 #include "http_server.h"
@@ -21,11 +22,13 @@
 static constexpr auto TAG = "esper-aqm";
 static constexpr auto kAppVersion = "1.0.0";
 
+#define I2C_MAX_DEVICES 128
 #define I2C_FREQ 100000
 #define I2C_SDA_GPIO_PIN (gpio_num_t)(18)
 #define I2C_SCL_GPIO_PIN (gpio_num_t)(17)
 #define I2C_ADDR_MCP9808 0x18
-#define I2C_ADDR_SEN5X 0x69
+#define I2C_ADDR_ASCII_LCD 0x27
+#define I2C_ADDR_SEN5X SEN5X_I2C_ADDRESS // 0x69, defined in CMakeLists
 #define SENSOR_UPDATE_RATE 1000 // msec
 
 constexpr double usec_to_sec(int64_t usec) {
@@ -45,8 +48,9 @@ public:
 
 private:
     void read_sensors();
-    void i2c_init();
+    esp_err_t i2c_init();
     void i2c_enumerate(i2c_port_t port, i2c_config_t* cfg);
+    bool i2c_device_found(uint8_t addr);
 
     system_t* _system;
     i2c_dev_t _mcp;
@@ -55,14 +59,23 @@ private:
     sensor_data _data;
     rest_server_context_t* _rest;
     int _update_rate_msec;
+    bool _i2c_found[I2C_MAX_DEVICES];
 };
 
 esper_aqm::esper_aqm(int update_rate_msec)
-: _system{nullptr}, _mcp{}, _sen{}, _data{}, _rest{nullptr}, _update_rate_msec{update_rate_msec}
+: _system(nullptr),
+  _mcp(),
+  _sen(),
+  _data(),
+  _rest(nullptr),
+  _update_rate_msec(update_rate_msec)
 {
     _rest = new rest_server_context_t();
     sensor_data_init(&_data);
     _rest->sensors = &_data;
+    for (uint8_t addr = 0; addr < I2C_MAX_DEVICES; addr++) {
+        _i2c_found[addr] = false;
+    }
 }
 
 esper_aqm::~esper_aqm()
@@ -76,40 +89,63 @@ esper_aqm::~esper_aqm()
 
 esp_err_t esper_aqm::init()
 {
+    static const char *logo =
+"  ___  ___ _ __   ___ _ __       __ _  __ _ _ __ ___  \n"
+" / _ \/ __| '_ \ / _ \ '__|____ / _` |/ _` | '_ ` _ \ \n"
+"|  __/\__ \ |_) |  __/ | |_____| (_| | (_| | | | | | |\n"
+" \___||___/ .__/ \___|_|        \__,_|\__, |_| |_| |_|\n"
+"          |_|                            |_|          \n";
+    printf(logo);
     printf("Esper Air Quality Monitor %s\n", kAppVersion);
 
     _system = system_init();
+    if (_system == NULL) {
+        return ESP_FAIL;
+    }
 
     ESP_ERROR_CHECK(system_get_info(_system));
     ESP_ERROR_CHECK(system_print_info(_system));
+    ESP_ERROR_CHECK(i2c_init());
 
-    i2c_init();
+    system_wifi_init(_system); // TODO: Thread it out
 
-    i2c_config_t lcd_i2c;
-    lcd_i2c.sda_io_num = (int)I2C_SDA_GPIO_PIN;
-    lcd_i2c.scl_io_num = (int)I2C_SCL_GPIO_PIN;
-    lcd_i2c.sda_pullup_en = true;
-    lcd_i2c.scl_pullup_en = true;
-    _lcd = lcd_init(0x27, I2C_NUM_0, &lcd_i2c, 2, 16, LCD_CHAR_SIZE_SMALL);
-    lcd_backlight(_lcd, LCD_BACKLIGHT_ON);
-    lcd_cursor_pos(_lcd, 0, 0);
-    lcd_printf(_lcd, "esper-aqm 1.0.0");
-    lcd_cursor_pos(_lcd, 0, 1);
-    lcd_printf(_lcd, "initializing...");
-
-    system_wifi_init(_system);
+    // HiLetGo HD44780 IIC I2C1602 LCD Display
+    if (i2c_device_found(I2C_ADDR_ASCII_LCD)) {
+        i2c_config_t lcd_i2c;
+        lcd_i2c.sda_io_num = (int)I2C_SDA_GPIO_PIN;
+        lcd_i2c.scl_io_num = (int)I2C_SCL_GPIO_PIN;
+        lcd_i2c.sda_pullup_en = true;
+        lcd_i2c.scl_pullup_en = true;
+        _lcd = lcd_init(I2C_ADDR_ASCII_LCD, I2C_NUM_0, &lcd_i2c, 2, 16, LCD_CHAR_SIZE_SMALL);
+        lcd_backlight(_lcd, LCD_BACKLIGHT_ON);
+        lcd_cursor_pos(_lcd, 0, 0);
+        lcd_printf(_lcd, "esper-aqm 1.0.0");
+        lcd_cursor_pos(_lcd, 0, 1);
+        lcd_printf(_lcd, "initializing...");
+    }
 
     // MCP9808 Temperature Sensor
-    memset(&_mcp, 0, sizeof(i2c_dev_t));
-    ESP_ERROR_CHECK(mcp9808_init_desc(&_mcp, I2C_ADDR_MCP9808, I2C_NUM_0, I2C_SDA_GPIO_PIN, I2C_SCL_GPIO_PIN));
-    ESP_ERROR_CHECK(mcp9808_init(&_mcp));
+    if (i2c_device_found(I2C_ADDR_MCP9808)) {
+        memset(&_mcp, 0, sizeof(i2c_dev_t));
+        ESP_ERROR_CHECK(mcp9808_init_desc(&_mcp, I2C_ADDR_MCP9808, I2C_NUM_0, I2C_SDA_GPIO_PIN, I2C_SCL_GPIO_PIN));
+        ESP_ERROR_CHECK(mcp9808_init(&_mcp));
+    }
 
     // SEN55 Air Quality Sensor
-    ESP_ERROR_CHECK(sensirion_i2c_hal_init(I2C_FREQ,
-        I2C_ADDR_SEN5X, I2C_NUM_0,
-        I2C_SDA_GPIO_PIN, I2C_SCL_GPIO_PIN,
-        true, true));
-    ESP_ERROR_CHECK((esp_err_t)sen5x_device_reset());
+    if (i2c_device_found(I2C_ADDR_SEN5X)) {
+        struct esp32_i2c_config cfg;
+        cfg.freq = I2C_FREQ;
+        cfg.addr = I2C_ADDR_SEN5X;
+        cfg.port = I2C_NUM_0;
+        cfg.sda = I2C_SDA_GPIO_PIN;
+        cfg.scl = I2C_SCL_GPIO_PIN;
+        cfg.sda_pullup = true;
+        cfg.scl_pullup = true;
+        ESP_ERROR_CHECK(sensirion_i2c_config_esp32(&cfg));
+        sensirion_i2c_hal_init();
+        ESP_ERROR_CHECK(sensirion_i2c_esp32_ok());
+        ESP_ERROR_CHECK((esp_err_t)sen5x_device_reset());
+    }
 
     unsigned char sen5x_name[32];
     sen5x_get_product_name(&sen5x_name[0], 32);
@@ -244,7 +280,7 @@ void esper_aqm::read_sensors()
     }
 }
 
-void esper_aqm::i2c_init()
+esp_err_t esper_aqm::i2c_init()
 {
     i2c_config_t config;
     memset(&config, 0, sizeof(i2c_config_t));
@@ -261,6 +297,10 @@ void esper_aqm::i2c_init()
     ESP_ERROR_CHECK(gpio_set_direction(I2C_SCL_GPIO_PIN, GPIO_MODE_INPUT_OUTPUT_OD));
     ESP_ERROR_CHECK(gpio_pullup_en(I2C_SDA_GPIO_PIN));
     ESP_ERROR_CHECK(gpio_pullup_en(I2C_SCL_GPIO_PIN));
+
+    ESP_LOGI(TAG, "Configured I2C on pins %d (sda) and %d (scl) at frequency %dHz", config.sda_io_num, config.scl_io_num, config.master.clk_speed);
+
+    return ESP_OK;
 }
 
 void esper_aqm::i2c_enumerate(i2c_port_t port, i2c_config_t* cfg)
@@ -268,18 +308,30 @@ void esper_aqm::i2c_enumerate(i2c_port_t port, i2c_config_t* cfg)
     printf("Enumerating I2C devices...\n");
     ESP_ERROR_CHECK(i2c_param_config(port, cfg));
     ESP_ERROR_CHECK(i2c_driver_install(port, cfg->mode, 0, 0, 0));
-    for (uint8_t address = 0; address < 127; address++) {
+    for (uint8_t addr = 0; addr < I2C_MAX_DEVICES; addr++) {
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         ESP_ERROR_CHECK(i2c_master_start(cmd));
-        ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (address << 1) | I2C_MASTER_WRITE, true));
+        ESP_ERROR_CHECK(i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true));
         ESP_ERROR_CHECK(i2c_master_stop(cmd));
         esp_err_t err = i2c_master_cmd_begin(port, cmd, 10 / portTICK_PERIOD_MS);
         i2c_cmd_link_delete(cmd);
         if (err == ESP_OK) {
-            printf("I2C device found at address 0x%02X\n", address);
+            printf("I2C device found at address 0x%02X\n", addr);
+            _i2c_found[addr] = true;
         }
     }
     ESP_ERROR_CHECK(i2c_driver_delete(port));
+}
+
+bool esper_aqm::i2c_device_found(uint8_t addr)
+{
+    for (uint8_t a = 0; a < I2C_MAX_DEVICES; a++) {
+        if (addr == a) {
+            return _i2c_found[addr];
+        }
+    }
+
+    return false;
 }
 
 extern "C" void app_main(void)
