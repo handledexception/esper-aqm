@@ -11,6 +11,7 @@ extern "C" {
 typedef struct wifi_s {
     char ssid[32];      // max ssid length is 32 chars
     char pass[64];      // max pw length is 16 chars for WEP, 63 chars for WPA2
+    char ip_str[16];
     wifi_auth_mode_t auth_mode;
     esp_netif_ip_info_t ip;
 } wifi_t;

@@ -147,7 +147,7 @@ void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, voi
         ESP_LOGI(TAG,"connect to the AP fail");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
-        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
         wifi_t *wifi = (wifi_t*)arg;
         if (wifi != NULL) {
             memcpy(&wifi->ip, &event->ip_info, sizeof(esp_netif_ip_info_t));
@@ -215,10 +215,10 @@ void wifi_init_sta(wifi_t *wifi)
     /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
+        ESP_LOGI(TAG, "Connected to SSID: %s, password: %s",
                  &wifi->ssid[0], &wifi->pass[0]);
     } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
+        ESP_LOGI(TAG, "Failed to connect to SSID: %s, password: %s",
                  &wifi->ssid[0], &wifi->pass[0]);
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");

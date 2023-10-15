@@ -7,6 +7,7 @@
 #include "mcp9808.h"
 #include "http_server.h"
 #include "utils.h"
+#include "wifi.h"
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -18,6 +19,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 static constexpr auto TAG = "esper-aqm";
 static constexpr auto kAppVersion = "1.0.0";
@@ -90,11 +92,11 @@ esper_aqm::~esper_aqm()
 esp_err_t esper_aqm::init()
 {
     static const char *logo =
-"  ___  ___ _ __   ___ _ __       __ _  __ _ _ __ ___  \n"
-" / _ \/ __| '_ \ / _ \ '__|____ / _` |/ _` | '_ ` _ \ \n"
-"|  __/\__ \ |_) |  __/ | |_____| (_| | (_| | | | | | |\n"
-" \___||___/ .__/ \___|_|        \__,_|\__, |_| |_| |_|\n"
-"          |_|                            |_|          \n";
+"  ___  _________  ___  _____      ____ _____ _____ ___ \n"
+" / _ \\/ ___/ __ \\/ _ \\/ ___/_____/ __ `/ __ `/ __ `__ \n"
+"/  __(__  ) /_/ /  __/ /  /_____/ /_/ / /_/ / / / / / /\n"
+"\\___/____/ .___/\\___/_/         \\__,_/\\__, /_/ /_/ /_/ \n"
+"        /_/                             /_/            \n";
     printf(logo);
     printf("Esper Air Quality Monitor %s\n", kAppVersion);
 
@@ -120,8 +122,10 @@ esp_err_t esper_aqm::init()
         lcd_backlight(_lcd, LCD_BACKLIGHT_ON);
         lcd_cursor_pos(_lcd, 0, 0);
         lcd_printf(_lcd, "esper-aqm 1.0.0");
-        lcd_cursor_pos(_lcd, 0, 1);
-        lcd_printf(_lcd, "initializing...");
+        if (_system->wifi->connected) {
+            lcd_cursor_pos(_lcd, 0, 1);
+            lcd_printf(_lcd, _system->wifi->ip_str);
+        }
     }
 
     // MCP9808 Temperature Sensor

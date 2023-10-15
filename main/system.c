@@ -80,12 +80,13 @@ system_t* system_init(void)
 esp_err_t system_wifi_init(system_t* sys)
 {
     sys->wifi = wifi_init(WIFI_SSID, WIFI_PASS, WIFI_AUTH_OPEN);
-    char ip_addr[16];
-    sprintf(&ip_addr[0], IPSTR, IP2STR(&sys->wifi->ip.ip));
-    char netmask[16];
-    sprintf(&netmask[0], IPSTR, IP2STR(&sys->wifi->ip.netmask));
     if (sys->wifi != NULL) {
-        ESP_LOGI(TAG, "Wifi SSID: %s PASS: %s IP: %s Subnet: %s",
+        char ip_addr[16];
+        sprintf(&ip_addr[0], IPSTR, IP2STR(&sys->wifi->ip.ip));
+        char netmask[16];
+        sprintf(&netmask[0], IPSTR, IP2STR(&sys->wifi->ip.netmask));
+        memcpy(&sys->wifi->ip_str, &ip_addr[0], 16);
+        ESP_LOGI(TAG, "Wi-Fi SSID: %s Password: %s IP: %s Subnet: %s",
             &sys->wifi->ssid[0],
             &sys->wifi->pass[0],
             &ip_addr[0],
