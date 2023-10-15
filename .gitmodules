@@ -1,0 +1,4 @@
+[submodule "thirdparty/esp-idf-lib"]
+	path = thirdparty/esp-idf-lib
+	url = https://github.com/UncleRus/esp-idf-lib.git
+	branch = master
