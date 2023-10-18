@@ -13,7 +13,7 @@ Open-source air-quality monitor built upon the LilyGo ESP32 T-Display-S3.
 git clone --recursive https://github.com/handledexception/esper-aqm.git
 ```
 2. Install esp-idf-v4.4.4.
-3. Connect components to the LilyGo ESP32 T-Display-S3 as shown in the diagram.
+3. Connect components to the LilyGo ESP32 T-Display-S3 as shown in the diagram (TODO).
 
 ### WiFi Configuration
 1. Install esp-idf-v4.4.4.
