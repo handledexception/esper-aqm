@@ -4,5 +4,5 @@
 	branch = master
 [submodule "thirdparty/embedded-i2c-sen5x"]
 	path = thirdparty/embedded-i2c-sen5x
-	url = https://github.com/handledexception/embedded-i2c-sen5x.git
-	branch = esp32-sample-impl
+	url = https://github.com/Sensirion/embedded-i2c-sen5x.git
+	branch = master
