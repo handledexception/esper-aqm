@@ -14,6 +14,7 @@ typedef struct wifi_s {
     char ip_str[16];
     wifi_auth_mode_t auth_mode;
     esp_netif_ip_info_t ip;
+    bool connected;
 } wifi_t;
 
 // esp32 stuff
