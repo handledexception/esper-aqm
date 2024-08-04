@@ -12,6 +12,8 @@ set(SEN5X_SOURCES
 
 set(ESPER_AQM_SOURCES
     main.cpp
+    aqi.h
+    aqi.cpp
     system.h
     system.c
     http_server.h
