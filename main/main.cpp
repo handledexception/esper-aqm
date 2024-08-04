@@ -8,6 +8,7 @@
 #include "http_server.h"
 #include "utils.h"
 #include "wifi.h"
+#include "aqi.h"
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -32,6 +33,7 @@ static constexpr auto kAppVersion = "1.0.0";
 #define I2C_ADDR_ASCII_LCD 0x27
 #define I2C_ADDR_SEN5X SEN5X_I2C_ADDRESS // 0x69, defined in CMakeLists
 #define SENSOR_UPDATE_RATE 1000 // msec
+#define ASCII_LCD_MAX_WINDOWS 3
 
 constexpr double usec_to_sec(int64_t usec) {
     return (double)usec / 1000000.0;
@@ -62,6 +64,7 @@ private:
     rest_server_context_t* _rest;
     int _update_rate_msec;
     bool _i2c_found[I2C_MAX_DEVICES];
+    AQI* _aqi;
 };
 
 esper_aqm::esper_aqm(int update_rate_msec)
@@ -75,9 +78,12 @@ esper_aqm::esper_aqm(int update_rate_msec)
     _rest = new rest_server_context_t();
     sensor_data_init(&_data);
     _rest->sensors = &_data;
+
     for (uint8_t addr = 0; addr < I2C_MAX_DEVICES; addr++) {
         _i2c_found[addr] = false;
     }
+
+    _aqi = new AQI(AQI::Algorithm::EPA);
 }
 
 esper_aqm::~esper_aqm()
@@ -187,11 +193,20 @@ void esper_aqm::run()
 {
     static unsigned int lcd_window = 0;
     static int64_t usec_last = 0;
+    int aqi = 0;
+    float acc_pm10 = 0.0f;
+    float acc_pm25 = 0.0f;
+    float avg_pm10 = 0.0f;
+    float avg_pm25 = 0.0f;
+    uint64_t num_samples = 0;
     while (1) {
         int64_t usec_now = esp_timer_get_time();
         if (usec_now - usec_last >= 5000000) {
             usec_last = usec_now;
-            lcd_window = !lcd_window;
+            lcd_window++;
+            if (lcd_window >= ASCII_LCD_MAX_WINDOWS) {
+                lcd_window = 0;
+            }
             ESP_LOGI(TAG, "lcd_window = %d", lcd_window);
         }
 
@@ -218,10 +233,20 @@ void esper_aqm::run()
             lcd_printf(_lcd, &txt[0]);
             lcd_cursor_pos(_lcd, 0, 1);
             memset(&txt[0], ' ', 16);
+            sprintf(&txt[0], "AQI: %d     ", aqi);
+            lcd_printf(_lcd, &txt[0]);
+        } else if (lcd_window == 2) {
+            lcd_cursor_pos(_lcd, 0, 0);
+            char txt[16];
+            memset(&txt[0], ' ', 16);
+            sprintf(&txt[0], "PM10: %.2f     ", _data.mass_concentration_pm10p0);
+            lcd_printf(_lcd, &txt[0]);
+            lcd_cursor_pos(_lcd, 0, 1);
+            memset(&txt[0], ' ', 16);
             sprintf(&txt[0], "PM2.5: %.1f     ", _data.mass_concentration_pm2p5);
-            lcd_printf(_lcd, &txt[0]);       
+            lcd_printf(_lcd, &txt[0]);
         }
-    
+
         printf("MCP9808 Temp: %.2f °C (%.2f °F)\n", _data.temperature_mcp9808, c_to_f(_data.temperature_mcp9808));
 
         { // Sensirion readings
@@ -247,6 +272,29 @@ void esper_aqm::run()
             } else {
                 printf("Nox index: %.1f\n", _data.nox_index / 10.0f);
             }
+
+            acc_pm10 += _data.mass_concentration_pm10p0;
+            acc_pm25 += _data.mass_concentration_pm2p5;
+            num_samples++;
+            avg_pm10 = acc_pm10 / (float)num_samples;
+            avg_pm25 = acc_pm25 / (float)num_samples;
+            float max_pm10 = _aqi->GetMaxConcentration(AQI::Pollutant::PM10);
+            float max_pm25 = _aqi->GetMaxConcentration(AQI::Pollutant::PM25);
+            if (avg_pm10 > max_pm10)
+                avg_pm10 = max_pm10;
+            if (avg_pm25 > max_pm25)
+                avg_pm25 = max_pm25;
+            AQI::Concentrations concentrations;
+            AQI::Concentration pm10;
+            AQI::Concentration pm25;
+            pm10.first = AQI::Pollutant::PM10;
+            pm10.second = avg_pm10;
+            pm25.first = AQI::Pollutant::PM25;
+            pm25.second = avg_pm25;
+            concentrations.push_back(pm10);
+            concentrations.push_back(pm25);
+            aqi = _aqi->GetIndex(concentrations);
+            printf("Air Quality Index: %d\n", aqi);
         }
 
         sleep_msec(_update_rate_msec);
