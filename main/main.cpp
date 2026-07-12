@@ -128,7 +128,7 @@ esp_err_t esper_aqm::init()
         lcd_backlight(_lcd, LCD_BACKLIGHT_ON);
         lcd_cursor_pos(_lcd, 0, 0);
         lcd_printf(_lcd, "esper-aqm 1.0.0");
-        if (_system->wifi->connected) {
+        if (_system->wifi && _system->wifi->connected) {
             lcd_cursor_pos(_lcd, 0, 1);
             lcd_printf(_lcd, _system->wifi->ip_str);
         }
@@ -139,6 +139,7 @@ esp_err_t esper_aqm::init()
         memset(&_mcp, 0, sizeof(i2c_dev_t));
         ESP_ERROR_CHECK(mcp9808_init_desc(&_mcp, I2C_ADDR_MCP9808, I2C_NUM_0, I2C_SDA_GPIO_PIN, I2C_SCL_GPIO_PIN));
         ESP_ERROR_CHECK(mcp9808_init(&_mcp));
+        ESP_LOGI(TAG, "MCP9808 initialized OK");
     }
 
     // SEN55 Air Quality Sensor
@@ -151,16 +152,18 @@ esp_err_t esper_aqm::init()
         cfg.scl = I2C_SCL_GPIO_PIN;
         cfg.sda_pullup = true;
         cfg.scl_pullup = true;
+        ESP_LOGI(TAG, "Initializing Sen5X...");
         ESP_ERROR_CHECK(sensirion_i2c_config_esp32(&cfg));
         sensirion_i2c_hal_init();
         ESP_ERROR_CHECK(sensirion_i2c_esp32_ok());
         ESP_ERROR_CHECK((esp_err_t)sen5x_device_reset());
+        ESP_LOGI(TAG, "Sen5X OK");
     }
 
-    unsigned char sen5x_name[32];
-    sen5x_get_product_name(&sen5x_name[0], 32);
-    unsigned char sen5x_serial[32];
-    sen5x_get_serial_number(&sen5x_serial[0], 32);
+    unsigned char sen5x_name[48];
+    sen5x_get_product_name(&sen5x_name[0], 48);
+    unsigned char sen5x_serial[48];
+    sen5x_get_serial_number(&sen5x_serial[0], 48);
     uint8_t sen5x_fw_maj = 0;
     uint8_t sen5x_fw_min = 0;
     bool sen5x_fw_debug = false;
