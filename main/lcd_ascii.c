@@ -129,9 +129,8 @@ esp_err_t lcd_printf(lcd_ascii_t* lcd, const char* fmt, ...)
     CHECK_ARG(lcd);
     va_list args;
     va_start(args, fmt);
-    char buf[16];
-    memset(&buf[0], 0, 16);
-    sprintf(&buf[0], fmt, args);
+    char buf[17];
+    vsnprintf(&buf[0], sizeof(buf), fmt, args);
     va_end(args);
     int len = strlen(&buf[0]);
     if (len > lcd->num_cols)

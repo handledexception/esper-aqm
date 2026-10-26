@@ -4,6 +4,7 @@ Open-source air-quality monitor built upon the LilyGo ESP32 T-Display-S3.
 - Utilizes the Sensirion Sen55 air quality sensor
 - Optional support for the PMS5003 air quality sensor.
 - Optional support for the MCP9808 temperature sensor.
+- Sensor dashboard on the T-Display-S3 built-in TFT (press KEY to switch between °F and °C)
 - Optional support for the HiLetGo (or compatible) HD44780 IIC I2C1602 LCD Display
 - HTTP server with JSON API
 
@@ -12,11 +13,11 @@ Open-source air-quality monitor built upon the LilyGo ESP32 T-Display-S3.
 ```
 git clone --recursive https://github.com/handledexception/esper-aqm.git
 ```
-2. Install esp-idf-v4.4.4.
+2. Install esp-idf-v5.5.1.
 3. Connect components to the LilyGo ESP32 T-Display-S3 as shown in the diagram (TODO).
 
 ### WiFi Configuration
-1. Install esp-idf-v4.4.4.
+1. Install esp-idf-v5.5.1.
 2. Open an esp-idf command line.
 3. Run `idf.py menuconfig`.
 4. Select `Component Config`.
@@ -30,7 +31,7 @@ git clone --recursive https://github.com/handledexception/esper-aqm.git
 4. Run `idf.py flash`, with optional specification of the COM port and baud rate
 
 ### VSCode ESP-IDF Terminal (Windows)
-1. Ensure esp-idf v4.4.4 is installed in C:\Espressif\frameworks\esp-idf-v4.4.4
+1. Ensure esp-idf v5.5.1 is installed in C:\Espressif\frameworks\esp-idf-v5.5.1
 2. Open esper-aqm as a folder in VSCode
 3. Open the Terminal window
 

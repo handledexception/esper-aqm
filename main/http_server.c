@@ -36,6 +36,8 @@ static const char* get_cpu_model_string(esp_chip_model_t model)
         return "ESP32-C3";
     case CHIP_ESP32H2:
         return "ESP32-H2";
+    default:
+        break;
     }
     return "";
 }
@@ -54,8 +56,9 @@ static esp_err_t get_system_info_handler(httpd_req_t* req)
         cJSON_AddNumberToObject(root, "min_free_heap_size", rest_server->sys->min_free_heap_size);
         cJSON_AddStringToObject(root, "idf_version", rest_server->sys->idf_ver_str);
         cJSON_AddNumberToObject(root, "num_cpu_cores", rest_server->sys->chip_info.cores);
-        cJSON_AddNumberToObject(root, "cpu_revision", rest_server->sys->chip_info.revision);
-        cJSON_AddNumberToObject(root, "cpu_full_revision", rest_server->sys->chip_info.full_revision);
+        // IDF 5 reports the revision as MXX (major * 100 + minor).
+        cJSON_AddNumberToObject(root, "cpu_revision", rest_server->sys->chip_info.revision / 100);
+        cJSON_AddNumberToObject(root, "cpu_full_revision", rest_server->sys->chip_info.revision);
         cJSON_AddStringToObject(root, "cpu_model", get_cpu_model_string(rest_server->sys->chip_info.model));
     }
     const char* json = cJSON_Print(root);

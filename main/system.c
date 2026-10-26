@@ -1,14 +1,18 @@
 #include "system.h"
 #include "wifi.h"
 #include "wifi_credential.h"
+#include "settings.h"
 
 #include "freertos/FreeRTOS.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#include "esp_flash.h"
+#include "esp_system.h"
 
 #include <i2cdev.h>
 #include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "aqm-system";
 #define CHECK_ARG(VAL) do { if (!(VAL)) return ESP_ERR_INVALID_ARG; } while (0)
@@ -29,7 +33,7 @@ esp_err_t system_get_info(system_t* sys)
 esp_err_t system_print_info(system_t* sys)
 {
     CHECK_ARG(sys);
-    printf("IDF Version: %s\nChip: %s (Rev: %d.%d)\nCores: %d\n%s Flash: %uMB\nHeap Free: %d\nWiFi: %s\nBluetooth: %s\nIEEE 802.15.4: %s\nEmbedded PSRAM: %s\n",
+    printf("IDF Version: %s\nChip: %s (Rev: %" PRIu32 ".%" PRIu32 ")\nCores: %d\n%s Flash: %" PRIu32 "MB\nHeap Free: %" PRIi32 "\nWiFi: %s\nBluetooth: %s\nIEEE 802.15.4: %s\nEmbedded PSRAM: %s\n",
             sys->idf_ver_str,
             CONFIG_IDF_TARGET,
             sys->ver_maj, sys->ver_min,
@@ -79,20 +83,20 @@ system_t* system_init(void)
 
 esp_err_t system_wifi_init(system_t* sys)
 {
-    sys->wifi = wifi_init(WIFI_SSID, WIFI_PASS, WIFI_AUTH_OPEN);
-    if (sys->wifi != NULL) {
-        char ip_addr[16];
-        sprintf(&ip_addr[0], IPSTR, IP2STR(&sys->wifi->ip.ip));
-        char netmask[16];
-        sprintf(&netmask[0], IPSTR, IP2STR(&sys->wifi->ip.netmask));
-        memcpy(&sys->wifi->ip_str, &ip_addr[0], 16);
-        ESP_LOGI(TAG, "Wi-Fi SSID: %s Password: %s IP: %s Subnet: %s",
-            &sys->wifi->ssid[0],
-            &sys->wifi->pass[0],
-            &ip_addr[0],
-            &netmask[0]);
+    // A network picked in the on-screen setup wins over the menuconfig one.
+    char ssid[WIFI_SSID_MAX_LEN + 1] = "";
+    char pass[WIFI_PASS_MAX_LEN + 1] = "";
+    if (settings_get_wifi(ssid, sizeof(ssid), pass, sizeof(pass)) == ESP_OK) {
+        ESP_LOGI(TAG, "Using saved Wi-Fi network %s", ssid);
     } else {
-        wifi_free(sys->wifi);
+        strlcpy(ssid, WIFI_SSID, sizeof(ssid));
+        strlcpy(pass, WIFI_PASS, sizeof(pass));
+    }
+
+    // Returns right away; Wi-Fi connects (and reconnects) in the background.
+    // wifi_get_snapshot() reports the connection state and IP.
+    sys->wifi = wifi_init(ssid, pass, WIFI_AUTH_OPEN);
+    if (sys->wifi == NULL) {
         ESP_LOGE(TAG, "Error initializing WiFi!");
         return ESP_FAIL;
     }

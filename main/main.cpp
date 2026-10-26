@@ -9,6 +9,8 @@
 #include "utils.h"
 #include "wifi.h"
 #include "aqi.h"
+#include "display.h"
+#include "settings.h"
 
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -39,9 +41,51 @@ constexpr double usec_to_sec(int64_t usec) {
     return (double)usec / 1000000.0;
 }
 
-constexpr double c_to_f(double celsius) {
-    return (celsius * 1.8) + 32.0;
-}
+
+// Rolling average of PM readings over the last kMinutes, kept as one
+// sum/count bucket per minute so memory stays small at any sample rate.
+struct pm_avg_window {
+    static constexpr int kMinutes = 60;
+
+    float sum_pm25[kMinutes] = {};
+    float sum_pm10[kMinutes] = {};
+    uint32_t count[kMinutes] = {};
+    int64_t cur_minute = -1;
+    int head = 0;
+
+    void clear_bucket(int i) { sum_pm25[i] = 0.0f; sum_pm10[i] = 0.0f; count[i] = 0; }
+
+    void add(int64_t usec, float pm25, float pm10) {
+        int64_t minute = usec / 60000000LL;
+        if (cur_minute < 0 || minute - cur_minute >= kMinutes) {
+            for (int i = 0; i < kMinutes; i++) clear_bucket(i);
+            cur_minute = minute;
+        }
+        // Step forward one bucket per elapsed minute, dropping the oldest.
+        while (cur_minute < minute) {
+            head = (head + 1) % kMinutes;
+            clear_bucket(head);
+            cur_minute++;
+        }
+        sum_pm25[head] += pm25;
+        sum_pm10[head] += pm10;
+        count[head]++;
+    }
+
+    bool average(float* pm25, float* pm10) const {
+        double s25 = 0.0, s10 = 0.0;
+        uint32_t n = 0;
+        for (int i = 0; i < kMinutes; i++) {
+            s25 += sum_pm25[i];
+            s10 += sum_pm10[i];
+            n += count[i];
+        }
+        if (n == 0) return false;
+        *pm25 = (float)(s25 / n);
+        *pm10 = (float)(s10 / n);
+        return true;
+    }
+};
 
 class esper_aqm {
 public:
@@ -51,7 +95,8 @@ public:
     void run();
 
 private:
-    void read_sensors();
+    bool read_sensors();
+    void update_display(int aqi);
     esp_err_t i2c_init();
     void i2c_enumerate(i2c_port_t port, i2c_config_t* cfg);
     bool i2c_device_found(uint8_t addr);
@@ -64,6 +109,8 @@ private:
     rest_server_context_t* _rest;
     int _update_rate_msec;
     bool _i2c_found[I2C_MAX_DEVICES];
+    bool _has_mcp9808;
+    bool _sen5x_ok;
     AQI* _aqi;
 };
 
@@ -71,9 +118,12 @@ esper_aqm::esper_aqm(int update_rate_msec)
 : _system(nullptr),
   _mcp(),
   _sen(),
+  _lcd(nullptr),
   _data(),
   _rest(nullptr),
-  _update_rate_msec(update_rate_msec)
+  _update_rate_msec(update_rate_msec),
+  _has_mcp9808(false),
+  _sen5x_ok(false)
 {
     _rest = new rest_server_context_t();
     sensor_data_init(&_data);
@@ -115,6 +165,12 @@ esp_err_t esper_aqm::init()
     ESP_ERROR_CHECK(system_print_info(_system));
     ESP_ERROR_CHECK(i2c_init());
 
+    // Built-in TFT. Started before Wi-Fi so the screen comes up right away.
+    esp_err_t display_err = display_start();
+    if (display_err != ESP_OK) {
+        ESP_LOGE(TAG, "TFT display failed to start: %s", esp_err_to_name(display_err));
+    }
+
     system_wifi_init(_system); // TODO: Thread it out
 
     // HiLetGo HD44780 IIC I2C1602 LCD Display
@@ -139,6 +195,7 @@ esp_err_t esper_aqm::init()
         memset(&_mcp, 0, sizeof(i2c_dev_t));
         ESP_ERROR_CHECK(mcp9808_init_desc(&_mcp, I2C_ADDR_MCP9808, I2C_NUM_0, I2C_SDA_GPIO_PIN, I2C_SCL_GPIO_PIN));
         ESP_ERROR_CHECK(mcp9808_init(&_mcp));
+        _has_mcp9808 = true;
         ESP_LOGI(TAG, "MCP9808 initialized OK");
     }
 
@@ -186,8 +243,10 @@ esp_err_t esper_aqm::init()
     _rest->sys = _system;
     http_server_start("/", _rest);
 
-    lcd_clear(_lcd);
-    lcd_cursor_pos(_lcd, 0, 0);
+    if (_lcd != nullptr) {
+        lcd_clear(_lcd);
+        lcd_cursor_pos(_lcd, 0, 0);
+    }
 
     return ESP_OK;
 }
@@ -197,11 +256,7 @@ void esper_aqm::run()
     static unsigned int lcd_window = 0;
     static int64_t usec_last = 0;
     int aqi = 0;
-    float acc_pm10 = 0.0f;
-    float acc_pm25 = 0.0f;
-    float avg_pm10 = 0.0f;
-    float avg_pm25 = 0.0f;
-    uint64_t num_samples = 0;
+    static pm_avg_window pm_window;
     while (1) {
         int64_t usec_now = esp_timer_get_time();
         if (usec_now - usec_last >= 5000000) {
@@ -216,41 +271,43 @@ void esper_aqm::run()
         double duration = usec_to_sec(system_get_uptime(_system));
         ESP_LOGI(TAG, "[%lldusec (+%.3fsec)] Reading sensors...", usec_now, duration);
 
-        read_sensors();
+        _sen5x_ok = read_sensors();
 
-        if (lcd_window == 0) {
+        if (_lcd == nullptr) {
+            // No HD44780 LCD connected.
+        } else if (lcd_window == 0) {
             lcd_cursor_pos(_lcd, 0, 0);
-            char txt[16];
+            char txt[17];
             memset(&txt[0], ' ', 16);
-            sprintf(&txt[0], "MCP: %.2fC     ", _data.temperature_mcp9808);
+            snprintf(txt, sizeof(txt), "MCP: %.2f%s     ", settings_temp_from_c(_data.temperature_mcp9808), settings_temp_unit());
             lcd_printf(_lcd, &txt[0]);
             lcd_cursor_pos(_lcd, 0, 1);
             memset(&txt[0], ' ', 16);
-            sprintf(&txt[0], "SEN: %.2fC     ", _data.ambient_temperature);
+            snprintf(txt, sizeof(txt), "SEN: %.2f%s     ", settings_temp_from_c(_data.ambient_temperature), settings_temp_unit());
             lcd_printf(_lcd, &txt[0]);
         } else if (lcd_window == 1) {
             lcd_cursor_pos(_lcd, 0, 0);
-            char txt[16];
+            char txt[17];
             memset(&txt[0], ' ', 16);
-            sprintf(&txt[0], "RH: %.2f     ", _data.ambient_humidity);
+            snprintf(txt, sizeof(txt), "RH: %.2f     ", _data.ambient_humidity);
             lcd_printf(_lcd, &txt[0]);
             lcd_cursor_pos(_lcd, 0, 1);
             memset(&txt[0], ' ', 16);
-            sprintf(&txt[0], "AQI: %d     ", aqi);
+            snprintf(txt, sizeof(txt), "AQI: %d     ", aqi);
             lcd_printf(_lcd, &txt[0]);
         } else if (lcd_window == 2) {
             lcd_cursor_pos(_lcd, 0, 0);
-            char txt[16];
+            char txt[17];
             memset(&txt[0], ' ', 16);
-            sprintf(&txt[0], "PM10: %.2f     ", _data.mass_concentration_pm10p0);
+            snprintf(txt, sizeof(txt), "PM10: %.2f     ", _data.mass_concentration_pm10p0);
             lcd_printf(_lcd, &txt[0]);
             lcd_cursor_pos(_lcd, 0, 1);
             memset(&txt[0], ' ', 16);
-            sprintf(&txt[0], "PM2.5: %.1f     ", _data.mass_concentration_pm2p5);
+            snprintf(txt, sizeof(txt), "PM2.5: %.1f     ", _data.mass_concentration_pm2p5);
             lcd_printf(_lcd, &txt[0]);
         }
 
-        printf("MCP9808 Temp: %.2f °C (%.2f °F)\n", _data.temperature_mcp9808, c_to_f(_data.temperature_mcp9808));
+        printf("MCP9808 Temp: %.2f °%s\n", settings_temp_from_c(_data.temperature_mcp9808), settings_temp_unit());
 
         { // Sensirion readings
             printf("Mass concentration pm1p0: %.1f µg/m³\n",
@@ -263,8 +320,8 @@ void esper_aqm::run()
                 _data.mass_concentration_pm10p0);
             printf("Ambient humidity: %.1f %%RH\n",
                 _data.ambient_humidity);
-            printf("Ambient temperature: %.1f °C (%.1f °F)\n",
-                _data.ambient_temperature, c_to_f(_data.ambient_temperature));
+            printf("Ambient temperature: %.1f °%s\n",
+                settings_temp_from_c(_data.ambient_temperature), settings_temp_unit());
             if (_data.voc_index == 0x7fff) {
                 printf("Voc index: n/a\n");
             } else {
@@ -276,38 +333,38 @@ void esper_aqm::run()
                 printf("Nox index: %.1f\n", _data.nox_index / 10.0f);
             }
 
-            acc_pm10 += _data.mass_concentration_pm10p0;
-            acc_pm25 += _data.mass_concentration_pm2p5;
-            num_samples++;
-            avg_pm10 = acc_pm10 / (float)num_samples;
-            avg_pm25 = acc_pm25 / (float)num_samples;
-            float max_pm10 = _aqi->GetMaxConcentration(AQI::Pollutant::PM10);
-            float max_pm25 = _aqi->GetMaxConcentration(AQI::Pollutant::PM25);
-            if (avg_pm10 > max_pm10)
-                avg_pm10 = max_pm10;
-            if (avg_pm25 > max_pm25)
-                avg_pm25 = max_pm25;
-            AQI::Concentrations concentrations;
-            AQI::Concentration pm10;
-            AQI::Concentration pm25;
-            pm10.first = AQI::Pollutant::PM10;
-            pm10.second = avg_pm10;
-            pm25.first = AQI::Pollutant::PM25;
-            pm25.second = avg_pm25;
-            concentrations.push_back(pm10);
-            concentrations.push_back(pm25);
-            aqi = _aqi->GetIndex(concentrations);
-            printf("Air Quality Index: %d\n", aqi);
+            // Only average good readings; a failed read leaves stale _data.
+            if (_sen5x_ok) {
+                pm_window.add(usec_now, _data.mass_concentration_pm2p5, _data.mass_concentration_pm10p0);
+            }
+            float avg_pm25 = 0.0f;
+            float avg_pm10 = 0.0f;
+            if (pm_window.average(&avg_pm25, &avg_pm10)) {
+                AQI::Concentrations concentrations = {
+                    {AQI::Pollutant::PM10, avg_pm10},
+                    {AQI::Pollutant::PM25, avg_pm25},
+                };
+                aqi = _aqi->GetIndex(concentrations);
+                printf("Air Quality Index: %d (avg PM2.5 %.1f, PM10 %.1f over last %d min)\n",
+                    aqi, avg_pm25, avg_pm10, pm_avg_window::kMinutes);
+            }
         }
+
+        update_display(aqi);
 
         sleep_msec(_update_rate_msec);
     }
 }
 
-void esper_aqm::read_sensors()
+// Returns true if the SEN5x reading succeeded.
+bool esper_aqm::read_sensors()
 {
-    _data.temperature_mcp9808 = 0.0;
-    ESP_ERROR_CHECK(mcp9808_get_temperature(&_mcp, &_data.temperature_mcp9808, NULL, NULL, NULL));
+    if (_has_mcp9808) {
+        _data.temperature_mcp9808 = 0.0;
+        ESP_ERROR_CHECK(mcp9808_get_temperature(&_mcp, &_data.temperature_mcp9808, NULL, NULL, NULL));
+    }
+
+    bool ok = false;
 
     uint32_t sen5x_status = 0;
     int16_t sen5x_err = sen5x_read_device_status(&sen5x_status);
@@ -322,17 +379,35 @@ void esper_aqm::read_sensors()
             &mass_concentration_pm1p0, &mass_concentration_pm2p5,
             &mass_concentration_pm4p0, &mass_concentration_pm10p0,
             &ambient_humidity, &ambient_temperature, &_data.voc_index, &_data.nox_index);
-        if (!sen5x_err) {
+        // The SEN5x reports 0xFFFF for values it doesn't have yet (e.g. right
+        // after measurement starts). Treat that as a failed read.
+        bool pm_valid = mass_concentration_pm2p5 != 0xFFFF && mass_concentration_pm10p0 != 0xFFFF;
+        if (!sen5x_err && !pm_valid) {
+            ESP_LOGW(TAG, "SEN5x PM values not ready yet");
+        }
+        if (!sen5x_err && pm_valid) {
             _data.mass_concentration_pm1p0 = (float)mass_concentration_pm1p0 / 10.0f;
             _data.mass_concentration_pm2p5 = (float)mass_concentration_pm2p5 / 10.0f;
             _data.mass_concentration_pm4p0 = (float)mass_concentration_pm4p0 / 10.0f;
             _data.mass_concentration_pm10p0 = (float)mass_concentration_pm10p0 / 10.0f;
             _data.ambient_humidity = (float)ambient_humidity / 100.0f;
             _data.ambient_temperature = (float)ambient_temperature / 200.0f;
+            ok = true;
         }
     } else {
         ESP_LOGE(TAG, "Sensirion device status error! Status: %d Error: %d", sen5x_status, sen5x_err);
     }
+    return ok;
+}
+
+void esper_aqm::update_display(int aqi)
+{
+    display_state_t st = {};
+    st.sensors = _data;
+    st.sen5x_ok = _sen5x_ok;
+    st.has_mcp9808 = _has_mcp9808;
+    st.aqi = _sen5x_ok ? aqi : -1;
+    display_update(&st);
 }
 
 esp_err_t esper_aqm::i2c_init()

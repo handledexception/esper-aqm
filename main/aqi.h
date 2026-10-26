@@ -35,9 +35,15 @@ public:
         MEP
     };
 
-    using Breakpoint = std::pair<float, float>;
+    // One row of an AQI table: concentrations [cLo, cHi] map linearly onto
+    // index values [iLo, iHi].
+    struct Breakpoint {
+        float cLo;
+        float cHi;
+        int iLo;
+        int iHi;
+    };
     using Breakpoints = std::vector<Breakpoint>;
-    using BreakpointEntry = std::pair<Pollutant, Breakpoints>;
     using BreakpointsMap = std::map<Pollutant, Breakpoints>;
 
     using Concentration = std::pair<Pollutant, float>;
@@ -47,16 +53,14 @@ public:
 
     int GetIntermediateIndex(const Concentration& con);
     int GetIndex(const Concentrations& con);
-    float GetConcentration(int intermediate);
     float GetMaxConcentration(Pollutant p);
     static float GetPrecision(Pollutant p);
     static const char* GetUnits(Pollutant p);
 
 private:
-    void initIndices();
+    const Breakpoints* getBreakpoints(Pollutant p);
     void initAlgos();
 
     Algorithm _algo;
-    Breakpoints _indices;
     std::map<Algorithm, BreakpointsMap> _algos;
 };

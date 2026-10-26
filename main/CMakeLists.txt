@@ -24,6 +24,12 @@ set(ESPER_AQM_SOURCES
     utils.c
     wifi.h
     wifi.c
+    settings.h
+    settings.c
+    display.h
+    display.cpp
+    button.h
+    button.c
 )
 
 set(TARGET_SOURCES

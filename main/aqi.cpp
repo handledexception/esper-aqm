@@ -1,56 +1,59 @@
 #include "aqi.h"
 
+#include <cmath>
+
 AQI::AQI(Algorithm algo)
 : _algo(algo)
 {
-    initIndices();
     initAlgos();
+}
+
+const AQI::Breakpoints* AQI::getBreakpoints(Pollutant p)
+{
+    auto algo = _algos.find(_algo);
+    if (algo == _algos.end())
+        return nullptr;
+    auto bps = algo->second.find(p);
+    if (bps == algo->second.end() || bps->second.empty())
+        return nullptr;
+    return &bps->second;
 }
 
 int AQI::GetIntermediateIndex(const Concentration& con)
 {
-    if (_algos.find(_algo) == _algos.end()) {
+    const Breakpoints* bps = getBreakpoints(con.first);
+    if (bps == nullptr)
         return -1;
+
+    // Truncate to the precision the tables are defined at (EPA: 0.1 for PM2.5,
+    // whole numbers for PM10). The small epsilon keeps e.g. 12.1 from becoming
+    // 12.0 through float error.
+    float prec = GetPrecision(con.first);
+    float c = std::floor(con.second / prec + 1e-3f) * prec;
+    if (c < 0.0f)
+        c = 0.0f;
+
+    // Clamp above the top of the table.
+    const Breakpoint& top = bps->back();
+    if (c >= top.cHi)
+        return top.iHi;
+
+    // Use the last row whose low end is <= c. Choosing by the low end alone
+    // means a value can never fall into the gap between two rows.
+    const Breakpoint* bp = &bps->front();
+    for (const Breakpoint& row : *bps) {
+        if (c >= row.cLo)
+            bp = &row;
     }
 
-    // Get pollutant-to-breakpoints map for specified algorithm
-    BreakpointsMap breakpointsMap = _algos[_algo];
-    Pollutant pollutant = std::get<0>(con);
-    if (breakpointsMap.find(pollutant) == breakpointsMap.end()) {
-        return -2;
-    }
-
-    // Get breakpoints for specified pollutant
-    Breakpoints breakpoints = breakpointsMap[pollutant];
-    float concentration = std::get<1>(con);
-    float bpLo = 0.0f;
-    float bpHi = 1.0f;
-    int idx = 0;
-    for (auto bp : breakpoints) {
-        if (concentration >= std::get<0>(bp) && concentration <= std::get<1>(bp)) {
-            bpLo = std::get<0>(bp);
-            bpHi = std::get<1>(bp);
-            break;
-        }
-        idx++;
-    }
-
-    // Get air quality index
-    if (idx >= _indices.size()) {
-        idx = _indices.size()-1;
-    }
-    auto aqi = _indices[idx];
-    float aqiLo = std::get<0>(aqi);
-    float aqiHi = std::get<1>(aqi);
-    float value = (aqiHi - aqiLo) / (bpHi - bpLo) * (concentration - bpLo) + aqiLo;
-
-    return static_cast<int>(value);
+    float value = (float)(bp->iHi - bp->iLo) / (bp->cHi - bp->cLo) * (c - bp->cLo) + bp->iLo;
+    return (int)std::lround(value);
 }
 
 int AQI::GetIndex(const Concentrations& concentrations)
 {
     int idx = 0;
-    for (auto c : concentrations) {
+    for (const auto& c : concentrations) {
         int iidx = GetIntermediateIndex(c);
         if (iidx > idx)
             idx = iidx;
@@ -58,28 +61,10 @@ int AQI::GetIndex(const Concentrations& concentrations)
     return idx;
 }
 
-float AQI::GetConcentration(int intermediate)
-{
-    float cons = 0.0f;
-    return cons;
-}
-
 float AQI::GetMaxConcentration(Pollutant p)
 {
-    if (_algos.find(_algo) == _algos.end()) {
-        return 0.0f;
-    }
-
-    // Get pollutant-to-breakpoints map for specified algorithm
-    BreakpointsMap breakpointsMap = _algos[_algo];
-    if (breakpointsMap.find(p) == breakpointsMap.end()) {
-        return 0.0f;
-    }
-
-    // Get breakpoints for specified pollutant
-    Breakpoints breakpoints = breakpointsMap[p];
-    auto bp = breakpoints[breakpoints.size()-1];
-    return std::get<1>(bp);
+    const Breakpoints* bps = getBreakpoints(p);
+    return bps ? bps->back().cHi : 0.0f;
 }
 
 float AQI::GetPrecision(Pollutant p)
@@ -90,8 +75,6 @@ float AQI::GetPrecision(Pollutant p)
     default:
         return 1.0f;
     }
-
-    return 1.0f;
 }
 
 const char* AQI::GetUnits(Pollutant p)
@@ -102,86 +85,52 @@ const char* AQI::GetUnits(Pollutant p)
     default:
         return NULL;
     }
-
-    return NULL;
-}
-
-void AQI::initIndices()
-{
-    // From EPA AQI guidelines: https://www.govinfo.gov/content/pkg/FR-2013-01-15/pdf/2012-30946.pdf
-    // Breakpoints are the same for EPA and MEP algorithms.
-    _indices.clear();
-    _indices.push_back(Breakpoint{0.0f, 50.0f});
-    _indices.push_back(Breakpoint{51.0f, 100.0f});
-    _indices.push_back(Breakpoint{101.0f, 150.0f});
-    _indices.push_back(Breakpoint{151.0f, 200.0f});
-    _indices.push_back(Breakpoint{201.0f, 300.0f});
-    _indices.push_back(Breakpoint{301.0f, 400.0f});
-    _indices.push_back(Breakpoint{401.0f, 500.0f});
 }
 
 void AQI::initAlgos()
 {
     _algos.clear();
 
-    // EPA algorithm data
-    BreakpointsMap epaBreakpoints;
-    // PM10
-    Breakpoints epa_bp_pm10 = {
-        {0.0f, 54.0f},
-        {55.0f, 154.0f},
-        {155.0f, 254.0f},
-        {255.0f, 354.0f},
-        {355.0f, 424.0f},
-        {425.0f, 504.0f},
-        {505.0f, 604.0f},
+    // EPA tables, as revised February 2024 (PM2.5 "Good" now tops out at 9.0,
+    // and "Hazardous" is a single 301-500 band).
+    BreakpointsMap epa;
+    epa[Pollutant::PM10] = {
+        {  0.0f,  54.0f,   0,  50},
+        { 55.0f, 154.0f,  51, 100},
+        {155.0f, 254.0f, 101, 150},
+        {255.0f, 354.0f, 151, 200},
+        {355.0f, 424.0f, 201, 300},
+        {425.0f, 604.0f, 301, 500},
     };
-    epaBreakpoints.emplace(BreakpointEntry{
-       Pollutant::PM10, epa_bp_pm10
-    });
+    epa[Pollutant::PM25] = {
+        {  0.0f,   9.0f,   0,  50},
+        {  9.1f,  35.4f,  51, 100},
+        { 35.5f,  55.4f, 101, 150},
+        { 55.5f, 125.4f, 151, 200},
+        {125.5f, 225.4f, 201, 300},
+        {225.5f, 325.4f, 301, 500},
+    };
+    _algos[Algorithm::EPA] = epa;
 
-    // PM2.5
-    Breakpoints epa_bp_pm25 = {
-        {0.0f, 12.0f},
-        {12.1f, 35.4f},
-        {35.5f, 55.4f},
-        {55.5f, 150.4f},
-        {150.5f, 250.4f},
-        {250.5f, 350.4f},
-        {350.5f, 500.4f},
+    // China MEP tables.
+    BreakpointsMap mep;
+    mep[Pollutant::PM10] = {
+        {  0.0f,  50.0f,   0,  50},
+        { 51.0f, 150.0f,  51, 100},
+        {151.0f, 250.0f, 101, 150},
+        {251.0f, 350.0f, 151, 200},
+        {351.0f, 420.0f, 201, 300},
+        {421.0f, 500.0f, 301, 400},
+        {501.0f, 600.0f, 401, 500},
     };
-    epaBreakpoints.emplace(BreakpointEntry{
-        Pollutant::PM25, epa_bp_pm25
-    });
-    _algos.emplace(std::pair<Algorithm, BreakpointsMap>{Algorithm::EPA, epaBreakpoints});
-
-    // MEP algorithm data
-    BreakpointsMap mepBreakpoints;
-    // PM10
-    Breakpoints mep_bp_pm10 = {
-        {0.0f, 50.0f},
-        {51.0f, 150.0f},
-        {151.0f, 250.0f},
-        {251.0f, 350.0f},
-        {351.0f, 420.0f},
-        {421.0f, 500.0f},
-        {501.0f, 600.0f},
+    mep[Pollutant::PM25] = {
+        {  0.0f,  35.0f,   0,  50},
+        { 36.0f,  75.0f,  51, 100},
+        { 76.0f, 115.0f, 101, 150},
+        {116.0f, 150.0f, 151, 200},
+        {151.0f, 250.0f, 201, 300},
+        {251.0f, 350.0f, 301, 400},
+        {351.0f, 500.0f, 401, 500},
     };
-    mepBreakpoints.emplace(BreakpointEntry{
-        Pollutant::PM10, mep_bp_pm10
-    });
-    // PM2.5
-    Breakpoints mep_bp_pm25 = {
-        {0.0f, 35.0f},
-        {36.0f, 75.0f},
-        {76.0f, 115.0f},
-        {116.0f, 150.0f},
-        {151.0f, 250.0f},
-        {251.0f, 350.0f},
-        {351.0f, 500.0f,}
-    };
-    mepBreakpoints.emplace(BreakpointEntry{
-        Pollutant::PM25, mep_bp_pm25
-    });
-    _algos.emplace(std::pair<Algorithm, BreakpointsMap>{Algorithm::MEP, mepBreakpoints});
+    _algos[Algorithm::MEP] = mep;
 }

@@ -6,3 +6,9 @@
 	path = thirdparty/embedded-i2c-sen5x
 	url = https://github.com/Sensirion/embedded-i2c-sen5x.git
 	branch = master
+[submodule "components/arduino"]
+	path = components/arduino
+	url = https://github.com/espressif/arduino-esp32.git
+[submodule "components/TFT_eSPI"]
+	path = thirdparty/TFT_eSPI
+	url = https://github.com/Bodmer/TFT_eSPI.git
